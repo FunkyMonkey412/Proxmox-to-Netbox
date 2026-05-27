@@ -29,23 +29,57 @@ This script requires **NetBox 4.x**. MAC addresses in 4.x are standalone objects
 
 ## 2. Proxmox
 
-### API token
+### Create the sync user
 
-The script authenticates to the Proxmox API using an API token. To set one up:
+The script uses a single dedicated user (`netboxsync@pam`) for both Proxmox API access and SSH-based LXC service discovery.
 
-1. Go to **Datacenter → Permissions → Roles** → **Add**
-   - Name: `NetBoxSync`
-   - Privileges: `VM.Audit`, `Sys.Audit`, `VM.GuestAgent.Unrestricted`
-2. Go to **Datacenter → Permissions → Users** → **Add**
-   - Username: `netboxsync`, Realm: `pam`
-3. Go to **Datacenter → Permissions → Add → User Permission**
-   - Path: `/`, User: `netboxsync@pam`, Role: `NetBoxSync`
-4. Go to **Datacenter → Permissions → API Tokens** → **Add**
-   - User: `netboxsync@pam`, Token ID: `netbox-sync`
-   - Uncheck **Privilege Separation** (so the token inherits the user's permissions)
-   - Copy the generated secret into your `.env` as `PROXMOX_TOKEN_SECRET`
+**Step 1 — Create the Linux user on the Proxmox host:**
 
-The token ID and user are pre-filled in `.env.example`. You only need to add the secret.
+> **Important:** The `@pam` realm means Proxmox delegates authentication to the Linux operating system. The Proxmox web UI user alone is not enough — a matching Linux system user **must** also exist on the host, or login will fail with a 401 error.
+
+Run this on the Proxmox host (e.g. via SSH or the shell tab in the UI):
+
+```bash
+useradd -M -s /usr/sbin/nologin netboxsync
+passwd netboxsync
+```
+
+- `-M` — no home directory (this is a service account)
+- `-s /usr/sbin/nologin` — disables interactive shell login for security
+
+Set the same password you will use in your `.env` file as `PROXMOX_PASSWORD`.
+
+**Step 2 — Grant sudo access for LXC container inspection:**
+
+```bash
+echo 'netboxsync ALL=(root) NOPASSWD: /usr/sbin/pct exec *' > /etc/sudoers.d/netboxsync
+chmod 440 /etc/sudoers.d/netboxsync
+```
+
+> Without this step, LXC port discovery is silently skipped. All other sync features still work.
+
+**Step 3 — Add the user in the Proxmox web UI:**
+
+Go to **Datacenter → Permissions → Users → Add**:
+- Username: `netboxsync`
+- Realm: `Linux PAM standard authentication`
+
+**Step 4 — Create a role:**
+
+Go to **Datacenter → Permissions → Roles → Add**:
+- Name: `NetBoxSync`
+- Privileges: `Sys.Audit`, `VM.Audit`, `VM.GuestAgent.Unrestricted`
+
+> `VM.GuestAgent.Unrestricted` was introduced in Proxmox VE 9. On older versions, use `VM.Monitor` instead.
+
+**Step 5 — Assign the role:**
+
+Go to **Datacenter → Permissions → Add → User Permission**:
+- Path: `/`
+- User: `netboxsync@pam`
+- Role: `NetBoxSync`
+
+Set `PROXMOX_USER=netboxsync@pam` and `PROXMOX_PASSWORD=<password>` in your `.env`.
 
 ### QEMU guest agent (required for VM IP and service discovery)
 
@@ -78,34 +112,36 @@ A reboot of the VM is required after enabling it in Proxmox if the VM was alread
 
 ## 3. Installation
 
+On Debian/Ubuntu, install Python 3 and venv support first:
+
 ```bash
-git clone git@github.com:FunkyMonkey412/Proxmox-to-Netbox.git
+apt install python3 python3-venv
+```
+
+Then clone the repo and set up the environment:
+
+```bash
+git clone https://github.com/FunkyMonkey412/Proxmox-to-Netbox.git
 cd Proxmox-to-Netbox
 
-apt install python3-venv
 python3 -m venv venv
-venv/bin/pip install proxmoxer pynetbox requests python-dotenv
+venv/bin/pip install proxmoxer pynetbox requests python-dotenv paramiko
 
 cp .env.example .env
 # Edit .env with your values
 ```
 
-## 4. Running the script
-
-From the `Proxmox-to-Netbox` folder:
-
-```bash
-venv/bin/python3 proxmox-netbox-sync.py
-```
+Once the script runs successfully, consider scheduling it with a cronjob to keep NetBox in sync automatically.
 
 ---
 
-## 5. Feature matrix
+## 4. Feature matrix
 
 | Feature | What's needed |
 |---------|--------------|
-| VM/container records | Proxmox API access |
-| Network interfaces + MACs | Proxmox API access |
-| LXC IP addresses | Proxmox API access (built-in, no agent) |
-| QEMU VM IP addresses | QEMU guest agent installed and enabled |
-| QEMU VM open TCP services | QEMU guest agent with exec support |
+| VM/container records | `VM.Audit` + `Sys.Audit` |
+| Network interfaces + MACs | `VM.Audit` |
+| LXC IP addresses | `VM.Audit` (built-in, no agent needed) |
+| QEMU VM IP addresses | `VM.GuestAgent.Unrestricted` + guest agent installed and running |
+| LXC open TCP services | SSH to Proxmox host + sudo for `pct exec` + `ss` in container |
+| QEMU VM open TCP services | `VM.GuestAgent.Unrestricted` + guest agent with exec support |
