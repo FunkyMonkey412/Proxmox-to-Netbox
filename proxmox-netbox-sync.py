@@ -24,6 +24,37 @@ MAC_PATTERN = re.compile(r'^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$')
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+def nb_get(endpoint, params=None, only=None):
+    """Raw GET request to NetBox API with optional field limiting."""
+    url = f"{NETBOX_URL}/api/{endpoint}/"
+    headers = {"Authorization": f"Token {NETBOX_TOKEN}", "Content-Type": "application/json"}
+    params = params or {}
+    if only:
+        params['only'] = ','.join(only)
+    response = session.get(url, headers=headers, params=params, verify=False)
+    response.raise_for_status()
+    return response.json()
+
+
+def nb_post(endpoint, data):
+    """Raw POST request to NetBox API."""
+    url = f"{NETBOX_URL}/api/{endpoint}/"
+    headers = {"Authorization": f"Token {NETBOX_TOKEN}", "Content-Type": "application/json"}
+    response = session.post(url, headers=headers, json=data, verify=False)
+    response.raise_for_status()
+    return response.json()
+
+
+def nb_patch(endpoint, data, obj_id):
+    """Raw PATCH request to NetBox API."""
+    url = f"{NETBOX_URL}/api/{endpoint}/{obj_id}/"
+    headers = {"Authorization": f"Token {NETBOX_TOKEN}", "Content-Type": "application/json"}
+    response = session.patch(url, headers=headers, json=data, verify=False)
+    response.raise_for_status()
+    return response.json()
+
+
+
 # Configuration
 PROXMOX_HOST = os.environ["PROXMOX_HOST"]
 PROXMOX_TOKEN_USER = os.environ["PROXMOX_TOKEN_USER"]
@@ -235,9 +266,7 @@ def process_vm(node_name, vm, cluster, vm_type='qemu'):
         vcpus = vm_config.get('cores', 1)
         memory = vm_config.get('memory', 0)
     
-    # Check if VM already exists in NetBox
-    existing_vm = nb.virtualization.virtual_machines.get(name=vm_name, only=['id', 'name', 'status', 'vcpus', 'memory', 'comments', 'cluster'])
-    
+    # Check if VM already exists in NetBox using raw API
     vm_data = {
         'name': vm_name,
         'cluster': cluster.id,
@@ -248,20 +277,18 @@ def process_vm(node_name, vm, cluster, vm_type='qemu'):
     }
     
     try:
+        # Search for existing VM using raw API to avoid _config_context_data
+        results = nb_get('virtualization/virtual-machines', params={'name': vm_name}, only=['id', 'name', 'status', 'vcpus', 'memory', 'comments', 'cluster'])
+        existing_vm = results.get('results', [{}])[0] if results.get('count', 0) > 0 else None
+        
         if existing_vm:
-            # Update existing VM - use save() instead of update() to avoid full object fetch
-            for key, value in vm_data.items():
-                setattr(existing_vm, key, value)
-            existing_vm.save()
+            # Update existing VM using raw PATCH
+            nb_patch(f'virtualization/virtual-machines/{existing_vm["id"]}', vm_data)
+            existing_vm = dict(existing_vm, **vm_data)  # Merge updates
             print(f"    ✓ Updated {type_label}: {vm_name}")
         else:
-            # Create new VM - fetch with limited fields after creation
-            existing_vm = nb.virtualization.virtual_machines.create(vm_data)
-            # Re-fetch with limited fields to avoid _config_context_data column
-            existing_vm = nb.virtualization.virtual_machines.get(
-                name=vm_name,
-                only=['id', 'name', 'status', 'vcpus', 'memory', 'comments', 'cluster']
-            )
+            # Create new VM using raw POST
+            existing_vm = nb_post('virtualization/virtual-machines', vm_data)
             print(f"    ✓ Created {type_label}: {vm_name}")
     except Exception as e:
         print(f"    ✗ Error with {type_label} {vm_name}: {e}")
@@ -307,35 +334,29 @@ def sync_vm_interfaces(node_name, vm_id, vm_name, vm_type='qemu', vm_status='off
                 
                 interface_name = key
                 
-                # Check if interface exists
-                existing_int = nb.virtualization.interfaces.get(
-                    virtual_machine_id=vm.id,
-                    name=interface_name,
-                    only=['id', 'name', 'virtual_machine', 'type']
-                )
-                
+                # Check if interface exists using raw API
                 int_data = {
-                    'virtual_machine': vm.id,
+                    'virtual_machine': existing_vm['id'],
                     'name': interface_name,
                     'type': 'virtual'
                 }
-
+                
                 try:
+                    # Search for existing interface
+                    results = nb_get('virtualization/interfaces', params={
+                        'virtual_machine_id': existing_vm['id'],
+                        'name': interface_name
+                    }, only=['id', 'name', 'virtual_machine', 'type'])
+                    existing_int = results.get('results', [{}])[0] if results.get('count', 0) > 0 else None
+                    
                     if existing_int:
-                        # Use save() to avoid full object fetch
-                        for key, value in int_data.items():
-                            setattr(existing_int, key, value)
-                        existing_int.save()
+                        # Update using raw PATCH
+                        nb_patch(f'virtualization/interfaces/{existing_int["id"]}', int_data)
+                        interface = dict(existing_int, **int_data)
                         print(f"      ✓ Updated interface: {interface_name}")
-                        interface = existing_int
                     else:
-                        interface = nb.virtualization.interfaces.create(int_data)
-                        # Re-fetch with limited fields
-                        interface = nb.virtualization.interfaces.get(
-                            virtual_machine_id=vm.id,
-                            name=interface_name,
-                            only=['id', 'name', 'virtual_machine', 'type']
-                        )
+                        # Create using raw POST
+                        interface = nb_post('virtualization/interfaces', int_data)
                         print(f"      ✓ Created interface: {interface_name}")
 
                     if mac:
@@ -355,36 +376,33 @@ def sync_vm_interfaces(node_name, vm_id, vm_name, vm_type='qemu', vm_status='off
 def sync_mac_address(mac, interface):
     """Create or update a MAC address object for a VM interface (NetBox 4.x style)."""
     try:
-        existing = nb.dcim.mac_addresses.filter(
-            assigned_object_type='virtualization.vminterface',
-            assigned_object_id=interface.id,
-            only=['id', 'mac_address', 'assigned_object_type', 'assigned_object_id']
-        )
-        existing = list(existing)
+        # Search for existing MAC using raw API
+        results = nb_get('dcim/mac-addresses', params={
+            'assigned_object_type': 'virtualization.vminterface',
+            'assigned_object_id': interface['id']
+        }, only=['id', 'mac_address', 'assigned_object_type', 'assigned_object_id'])
+        existing = results.get('results', [])
 
         if existing:
             mac_obj = existing[0]
-            if str(mac_obj.mac_address).upper() != mac.upper():
-                mac_obj.mac_address = mac
-                mac_obj.save()
+            if str(mac_obj['mac_address']).upper() != mac.upper():
+                # Update using raw PATCH
+                nb_patch(f'dcim/mac-addresses/{mac_obj["id"]}', {'mac_address': mac})
+                mac_obj['mac_address'] = mac
                 print(f"      ✓ Updated MAC: {mac}")
             else:
                 print(f"      ✓ MAC unchanged: {mac}")
         else:
-            mac_obj = nb.dcim.mac_addresses.create(
-                mac_address=mac,
-                assigned_object_type='virtualization.vminterface',
-                assigned_object_id=interface.id
-            )
-            # Re-fetch with limited fields
-            mac_obj = nb.dcim.mac_addresses.get(
-                id=mac_obj.id,
-                only=['id', 'mac_address', 'assigned_object_type', 'assigned_object_id']
-            )
+            # Create using raw POST
+            mac_obj = nb_post('dcim/mac-addresses', {
+                'mac_address': mac,
+                'assigned_object_type': 'virtualization.vminterface',
+                'assigned_object_id': interface['id']
+            })
             print(f"      ✓ Created MAC: {mac}")
 
-        # Set as primary MAC on the interface
-        interface.update({'primary_mac_address': mac_obj.id})
+        # Set as primary MAC on the interface using raw PATCH
+        nb_patch(f'virtualization/interfaces/{interface["id"]}', {'primary_mac_address': mac_obj['id']})
 
     except Exception as e:
         print(f"      ✗ Error syncing MAC {mac}: {e}")
@@ -452,34 +470,34 @@ def get_open_tcp_ports(node_name, vm_id, vm_type):
 
 def sync_services(vm, ports_by_name):
     """Create/update TCP service records in NetBox for a VM."""
-    existing_services = {
-        s.name: s
-        for s in nb.ipam.services.filter(
-            parent_object_type='virtualization.virtualmachine',
-            parent_object_id=vm.id,
-            protocol='tcp',
-            only=['id', 'name', 'ports', 'protocol', 'parent_object_type', 'parent_object_id']
-        )
-    }
+    # Get existing services using raw API
+    results = nb_get('ipam/services', params={
+        'parent_object_type': 'virtualization.virtualmachine',
+        'parent_object_id': vm['id'],
+        'protocol': 'tcp'
+    }, only=['id', 'name', 'ports', 'protocol', 'parent_object_type', 'parent_object_id'])
+    existing_services = {s['name']: s for s in results.get('results', [])}
 
     for name, ports in ports_by_name.items():
         ports = sorted(set(ports))
         if name in existing_services:
             svc = existing_services[name]
-            if sorted(svc.ports or []) != ports:
-                svc.ports = ports
-                svc.save()
+            if sorted(svc.get('ports', []) or []) != ports:
+                # Update using raw PATCH
+                nb_patch(f'ipam/services/{svc["id"]}', {'ports': ports})
+                svc['ports'] = ports
                 print(f"      ✓ Updated service: {name} -> {ports}")
             else:
                 print(f"      - Service unchanged: {name} {ports}")
         else:
-            nb.ipam.services.create(
-                name=name,
-                protocol='tcp',
-                ports=ports,
-                parent_object_type='virtualization.virtualmachine',
-                parent_object_id=vm.id,
-            )
+            # Create using raw POST
+            nb_post('ipam/services', {
+                'name': name,
+                'protocol': 'tcp',
+                'ports': ports,
+                'parent_object_type': 'virtualization.virtualmachine',
+                'parent_object_id': vm['id'],
+            })
             print(f"      ✓ Created service: {name} -> {ports}")
 
 
@@ -487,24 +505,25 @@ def sync_services(vm, ports_by_name):
 def assign_ip_to_interface(ip_address, interface, vm):
     """Assign an IP address to an interface in NetBox"""
     try:
-        # Check if IP already exists
-        existing_ip = nb.ipam.ip_addresses.get(address=ip_address, only=['id', 'address', 'assigned_object_type', 'assigned_object_id', 'status'])
+        # Check if IP already exists using raw API
+        results = nb_get('ipam/ip-addresses', params={'address': ip_address}, 
+                        only=['id', 'address', 'assigned_object_type', 'assigned_object_id', 'status'])
+        existing_ip = results.get('results', [{}])[0] if results.get('count', 0) > 0 else None
+        
+        ip_data = {
+            'address': ip_address,
+            'assigned_object_type': 'virtualization.vminterface',
+            'assigned_object_id': interface['id'],
+            'status': 'active'
+        }
         
         if existing_ip:
-            # Update existing IP - use setattr/save to avoid full fetch
-            existing_ip.assigned_object_type = 'virtualization.vminterface'
-            existing_ip.assigned_object_id = interface.id
-            existing_ip.status = 'active'
-            existing_ip.save()
+            # Update using raw PATCH
+            nb_patch(f'ipam/ip-addresses/{existing_ip["id"]}', ip_data)
             print(f"        ✓ Updated IP: {ip_address}")
         else:
-            # Create new IP
-            nb.ipam.ip_addresses.create(
-                address=ip_address,
-                assigned_object_type='virtualization.vminterface',
-                assigned_object_id=interface.id,
-                status='active'
-            )
+            # Create using raw POST
+            nb_post('ipam/ip-addresses', ip_data)
             print(f"        ✓ Created IP: {ip_address}")
     
     except Exception as e:
