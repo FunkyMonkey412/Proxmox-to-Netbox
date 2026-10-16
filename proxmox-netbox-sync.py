@@ -72,10 +72,13 @@ def nb_api(method, endpoint, data=None, params=None):
     url = f"{NETBOX_URL}/api/{endpoint}/"
     headers = {"Authorization": f"Token {NETBOX_TOKEN}", "Content-Type": "application/json"}
     
+    # Always disable SSL verification for self-signed certs
+    verify_ssl = False
+    
     if method == 'GET':
-        response = session.get(url, headers=headers, params=params, verify=False)
+        response = session.get(url, headers=headers, params=params, verify=verify_ssl)
     elif method == 'POST':
-        response = session.post(url, headers=headers, json=data, verify=False)
+        response = session.post(url, headers=headers, json=data, verify=verify_ssl)
     elif method == 'PATCH':
         # For PATCH, endpoint should be like 'virtualization/virtual-machines' 
         # and data should contain 'id'
@@ -83,7 +86,7 @@ def nb_api(method, endpoint, data=None, params=None):
         if obj_id and '{' not in endpoint and '/' not in endpoint.split('/')[-1]:
             # endpoint doesn't already have an ID, append it
             url = f"{NETBOX_URL}/api/{endpoint}/{obj_id}/"
-        response = session.patch(url, headers=headers, json=data, verify=False)
+        response = session.patch(url, headers=headers, json=data, verify=verify_ssl)
     else:
         raise ValueError(f"Unsupported method: {method}")
     
