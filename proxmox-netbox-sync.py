@@ -48,6 +48,24 @@ proxmox = ProxmoxAPI(
 session = requests.Session()
 session.verify = False
 
+# Cache for NetBox objects to avoid repeated API calls
+_NB_CACHE = {}
+
+
+def get_nb_cache(key, fetch_func):
+    """Get from cache or fetch and cache."""
+    if key not in _NB_CACHE:
+        _NB_CACHE[key] = fetch_func()
+    return _NB_CACHE[key]
+
+
+def clear_nb_cache():
+    """Clear the NetBox cache."""
+    global _NB_CACHE
+    _NB_CACHE = {}
+
+
+
 
 def nb_api(method, endpoint, data=None, params=None):
     """Raw API request to NetBox."""
@@ -228,8 +246,8 @@ def process_vm(node_name, vm, cluster, vm_type='qemu'):
         vcpus = vm_config.get('cores', 1)
         memory = vm_config.get('memory', 0)
     
-    # Fetch all VMs and filter locally by name
-    all_vms = nb_api('GET', 'virtualization/virtual-machines')
+    # Fetch all VMs from cache and filter locally by name
+    all_vms = get_nb_cache('all_vms', lambda: nb_api('GET', 'virtualization/virtual-machines'))
     matching_vms = [v for v in all_vms.get('results', []) if v.get('name') == vm_name]
     existing_vm = matching_vms[0] if matching_vms else None
     
@@ -289,7 +307,8 @@ def sync_vm_interfaces(node_name, vm_id, vm_name, vm_type='qemu', vm_status='off
                 interface_name = key
                 
                 # Fetch all interfaces for this VM and filter locally
-                all_interfaces = nb_api('GET', 'virtualization/interfaces', params={'virtual_machine_id': vm_obj['id']})
+                cache_key = f'interfaces_{vm_obj["id"]}'
+                all_interfaces = get_nb_cache(cache_key, lambda: nb_api('GET', 'virtualization/interfaces', params={'virtual_machine_id': vm_obj['id']}))
                 matching_interfaces = [i for i in all_interfaces.get('results', []) if i.get('name') == interface_name]
                 existing_int = matching_interfaces[0] if matching_interfaces else None
                 
@@ -408,8 +427,8 @@ def get_open_tcp_ports(node_name, vm_id, vm_type):
 
 def sync_services(vm, ports_by_name):
     """Create/update TCP service records in NetBox for a VM."""
-    # Fetch all services and filter locally
-    all_services = nb_api('GET', 'ipam/services')
+    # Fetch all services from cache and filter locally
+    all_services = get_nb_cache('all_services', lambda: nb_api('GET', 'ipam/services'))
     matching_services = [s for s in all_services.get('results', []) 
                        if s.get('parent_object_type') == 'virtualization.virtualmachine' 
                        and s.get('parent_object_id') == vm['id'] 
@@ -440,8 +459,8 @@ def sync_services(vm, ports_by_name):
 def assign_ip_to_interface(ip_address, interface, vm):
     """Assign an IP address to an interface in NetBox"""
     try:
-        # Fetch all IPs and filter locally
-        all_ips = nb_api('GET', 'ipam/ip-addresses')
+        # Fetch all IPs from cache and filter locally
+        all_ips = get_nb_cache('all_ips', lambda: nb_api('GET', 'ipam/ip-addresses'))
         matching_ips = [ip for ip in all_ips.get('results', []) if ip.get('address') == ip_address]
         existing_ip = matching_ips[0] if matching_ips else None
         
