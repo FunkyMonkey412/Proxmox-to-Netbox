@@ -204,25 +204,41 @@ def get_vm_ip_addresses(node_name, vm_id, vm_type='qemu'):
 
 def sync_vms():
     """Sync all VMs from Proxmox to NetBox"""
-    cluster = get_or_create_cluster()
+    try:
+        cluster = get_or_create_cluster()
+    except Exception as e:
+        print(f"Could not get/create cluster in NetBox: {e}")
+        return
     
     for node in proxmox.nodes.get():
         node_name = node['node']
         print(f"\nProcessing node: {node_name}")
         
+        # Process QEMU VMs - Proxmox API call
         try:
             vms = proxmox.nodes(node_name).qemu.get()
-            for vm in vms:
-                process_vm(node_name, vm, cluster, 'qemu')
         except Exception as e:
             print(f"Could not get VMs from {node_name}: {e}")
+            vms = []
         
+        for vm in vms:
+            try:
+                process_vm(node_name, vm, cluster, 'qemu')
+            except Exception as e:
+                print(f"Error processing VM {vm.get('name', 'unknown')}: {e}")
+        
+        # Process LXC Containers - Proxmox API call
         try:
             containers = proxmox.nodes(node_name).lxc.get()
-            for container in containers:
-                process_vm(node_name, container, cluster, 'lxc')
         except Exception as e:
             print(f"Could not get containers from {node_name}: {e}")
+            containers = []
+        
+        for container in containers:
+            try:
+                process_vm(node_name, container, cluster, 'lxc')
+            except Exception as e:
+                print(f"Error processing container {container.get('name', 'unknown')}: {e}")
 
 
 def process_vm(node_name, vm, cluster, vm_type='qemu'):
@@ -273,7 +289,7 @@ def process_vm(node_name, vm, cluster, vm_type='qemu'):
             existing_vm = nb_api('POST', 'virtualization/virtual-machines', data=vm_data)
             print(f"    \u2713 Created {type_label}: {vm_name}")
     except Exception as e:
-        print(f"    \u2717 Error with {type_label} {vm_name}: {e}")
+        print(f"    \u2717 Error with {type_label} {vm_name} (NetBox API): {e}")
         return
     
     sync_vm_interfaces(node_name, vm_id, vm_name, vm_type, status, existing_vm)
