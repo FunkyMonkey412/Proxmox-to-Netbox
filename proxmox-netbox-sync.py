@@ -59,8 +59,9 @@ def nb_api(method, endpoint, data=None, params=None):
     elif method == 'POST':
         response = session.post(url, headers=headers, json=data, verify=False)
     elif method == 'PATCH':
-        url = f"{NETBOX_URL}/api/{endpoint}/{data.get('id', '')}/" if data and 'id' in data else url
-        response = session.patch(url, headers=headers, json=data, verify=False)
+        obj_id = data.get('id') if data and isinstance(data, dict) else None
+        url_with_id = f"{NETBOX_URL}/api/{endpoint}/{obj_id}/" if obj_id else url
+        response = session.patch(url_with_id, headers=headers, json=data, verify=False)
     else:
         raise ValueError(f"Unsupported method: {method}")
     
@@ -94,19 +95,21 @@ def parse_mac_from_config(config_value, vm_type='qemu'):
 
 def get_or_create_cluster():
     """Get or create cluster in NetBox"""
-    # Try to get existing cluster
-    results = nb_api('GET', 'virtualization/clusters', params={'name': CLUSTER_NAME})
-    if results and results.get('count', 0) > 0:
-        cluster = results['results'][0]
+    # Fetch all clusters and filter locally
+    all_clusters = nb_api('GET', 'virtualization/clusters')
+    matching = [c for c in all_clusters.get('results', []) if c.get('name') == CLUSTER_NAME]
+    if matching:
+        cluster = matching[0]
         print(f"Found existing cluster: {CLUSTER_NAME}")
         return cluster
 
     # Create cluster type if needed
     cluster_type_slug = CLUSTER_TYPE_NAME.lower().replace(" ", "-")
-    results = nb_api('GET', 'virtualization/cluster-types', params={'name': CLUSTER_TYPE_NAME})
+    all_types = nb_api('GET', 'virtualization/cluster-types')
+    matching_types = [t for t in all_types.get('results', []) if t.get('name') == CLUSTER_TYPE_NAME]
     
-    if results and results.get('count', 0) > 0:
-        cluster_type = results['results'][0]
+    if matching_types:
+        cluster_type = matching_types[0]
         print(f"Found existing cluster type: {CLUSTER_TYPE_NAME}")
     else:
         print(f"Creating cluster type: {CLUSTER_TYPE_NAME}")
@@ -130,7 +133,6 @@ def get_vm_ip_addresses(node_name, vm_id, vm_type='qemu'):
     
     try:
         if vm_type == 'qemu':
-            # Try to get network interfaces from QEMU guest agent
             network_data = proxmox.nodes(node_name).qemu(vm_id).agent.get('network-get-interfaces')
             
             if network_data and 'result' in network_data:
@@ -139,23 +141,14 @@ def get_vm_ip_addresses(node_name, vm_id, vm_type='qemu'):
                         for ip_info in interface['ip-addresses']:
                             ip_address = ip_info.get('ip-address')
                             ip_type = ip_info.get('ip-address-type')
-                            
-                            # Skip unwanted addresses
                             if not ip_address:
                                 continue
-                            
-                            # Skip loopback addresses (127.0.0.0/8 and ::1)
                             if ip_address.startswith('127.') or ip_address == '::1':
                                 continue
-                            
-                            # Skip link-local addresses (169.254.0.0/16 and fe80::/10)
                             if ip_address.startswith('169.254.') or ip_address.startswith('fe80:'):
                                 continue
-                            
-                            # Skip loopback interfaces
                             if interface.get('name', '').startswith('lo'):
                                 continue
-                            
                             prefix = ip_info.get('prefix', 24 if ip_type == 'ipv4' else 64)
                             ip_addresses.append({
                                 'address': f"{ip_address}/{prefix}",
@@ -163,34 +156,25 @@ def get_vm_ip_addresses(node_name, vm_id, vm_type='qemu'):
                             })
         
         elif vm_type == 'lxc':
-            # For LXC containers, get IP from container config
             network_data = proxmox.nodes(node_name).lxc(vm_id).interfaces.get()
-            
             for interface in network_data:
-                # Skip loopback interface
                 if interface.get('name', '').startswith('lo'):
                     continue
-                    
                 if 'inet' in interface:
                     ip = interface['inet'].split('/')[0]
-                    # Skip loopback and link-local
                     if not ip.startswith('127.') and not ip.startswith('169.254.'):
                         ip_addresses.append({
                             'address': interface['inet'],
                             'interface': interface.get('name', 'eth0')
                         })
-                
                 if 'inet6' in interface:
                     ip = interface['inet6'].split('/')[0]
-                    # Skip loopback and link-local
                     if ip != '::1' and not ip.startswith('fe80:'):
                         ip_addresses.append({
                             'address': interface['inet6'],
                             'interface': interface.get('name', 'eth0')
                         })
-    
-    except Exception as e:
-        # Guest agent might not be installed or VM might be off
+    except Exception:
         pass
     
     return ip_addresses
@@ -200,12 +184,10 @@ def sync_vms():
     """Sync all VMs from Proxmox to NetBox"""
     cluster = get_or_create_cluster()
     
-    # Get all nodes
     for node in proxmox.nodes.get():
         node_name = node['node']
         print(f"\nProcessing node: {node_name}")
         
-        # Process QEMU VMs
         try:
             vms = proxmox.nodes(node_name).qemu.get()
             for vm in vms:
@@ -213,7 +195,6 @@ def sync_vms():
         except Exception as e:
             print(f"Could not get VMs from {node_name}: {e}")
         
-        # Process LXC Containers
         try:
             containers = proxmox.nodes(node_name).lxc.get()
             for container in containers:
@@ -231,7 +212,6 @@ def process_vm(node_name, vm, cluster, vm_type='qemu'):
     type_label = "Container" if vm_type == 'lxc' else "VM"
     print(f"  Processing {type_label}: {vm_name} (ID: {vm_id})")
     
-    # Get detailed VM config
     try:
         if vm_type == 'qemu':
             vm_config = proxmox.nodes(node_name).qemu(vm_id).config.get()
@@ -241,7 +221,6 @@ def process_vm(node_name, vm, cluster, vm_type='qemu'):
         print(f"    Could not get config for {vm_name}: {e}")
         return
     
-    # Extract VM details
     if vm_type == 'qemu':
         vcpus = vm_config.get('cores', 1) * vm_config.get('sockets', 1)
         memory = vm_config.get('memory', 0)
@@ -249,9 +228,10 @@ def process_vm(node_name, vm, cluster, vm_type='qemu'):
         vcpus = vm_config.get('cores', 1)
         memory = vm_config.get('memory', 0)
     
-    # Check if VM already exists in NetBox
-    results = nb_api('GET', 'virtualization/virtual-machines', params={'name': vm_name})
-    existing_vm = results['results'][0] if results and results.get('count', 0) > 0 else None
+    # Fetch all VMs and filter locally by name
+    all_vms = nb_api('GET', 'virtualization/virtual-machines')
+    matching_vms = [v for v in all_vms.get('results', []) if v.get('name') == vm_name]
+    existing_vm = matching_vms[0] if matching_vms else None
     
     vm_data = {
         'name': vm_name,
@@ -264,27 +244,23 @@ def process_vm(node_name, vm, cluster, vm_type='qemu'):
     
     try:
         if existing_vm:
-            # Update existing VM
             nb_api('PATCH', f'virtualization/virtual-machines/{existing_vm["id"]}', data=vm_data)
             existing_vm.update(vm_data)
             print(f"    \u2713 Updated {type_label}: {vm_name}")
         else:
-            # Create new VM
             existing_vm = nb_api('POST', 'virtualization/virtual-machines', data=vm_data)
             print(f"    \u2713 Created {type_label}: {vm_name}")
     except Exception as e:
         print(f"    \u2717 Error with {type_label} {vm_name}: {e}")
         return
     
-    # Sync network interfaces and IPs
     sync_vm_interfaces(node_name, vm_id, vm_name, vm_type, status, existing_vm)
 
-    # Sync open TCP ports as services (only for running VMs)
     if status == 'active':
         print(f"    Discovering open TCP ports on {vm_name}...")
         ports = get_open_tcp_ports(node_name, vm_id, vm_type)
         if ports:
-            print(f"      Found services: { {k: v for k, v in ports.items()} }")
+            print(f"      Found services: {{k: v for k, v in ports.items()}}")
         else:
             print(f"      No open ports found (agent unavailable or none listening)")
         sync_services(existing_vm, ports)
@@ -301,25 +277,21 @@ def sync_vm_interfaces(node_name, vm_id, vm_name, vm_type='qemu', vm_status='off
         if not vm_obj:
             return
         
-        # Get IP addresses from guest agent (only if VM is running)
         ip_data = []
         if vm_status == 'active':
             ip_data = get_vm_ip_addresses(node_name, vm_id, vm_type)
             if ip_data:
                 print(f"      Found {len(ip_data)} IP address(es)")
         
-        # Look for network interfaces (net0, net1, etc.)
         for key, value in vm_config.items():
             if key.startswith('net'):
                 mac = parse_mac_from_config(value, vm_type)
-                
                 interface_name = key
                 
-                # Check if interface exists
-                results = nb_api('GET', 'virtualization/interfaces', params={
-                    'virtual_machine_id': vm_obj['id'],
-                    'name': interface_name})
-                existing_int = results['results'][0] if results and results.get('count', 0) > 0 else None
+                # Fetch all interfaces for this VM and filter locally
+                all_interfaces = nb_api('GET', 'virtualization/interfaces', params={'virtual_machine_id': vm_obj['id']})
+                matching_interfaces = [i for i in all_interfaces.get('results', []) if i.get('name') == interface_name]
+                existing_int = matching_interfaces[0] if matching_interfaces else None
                 
                 int_data = {
                     'virtual_machine': vm_obj['id'],
@@ -339,7 +311,6 @@ def sync_vm_interfaces(node_name, vm_id, vm_name, vm_type='qemu', vm_status='off
                     if mac:
                         sync_mac_address(mac, interface)
 
-                    # Assign IP addresses to this interface
                     if ip_data:
                         for ip_info in ip_data:
                             assign_ip_to_interface(ip_info['address'], interface, vm_obj)
@@ -354,11 +325,11 @@ def sync_vm_interfaces(node_name, vm_id, vm_name, vm_type='qemu', vm_status='off
 def sync_mac_address(mac, interface):
     """Create or update a MAC address object for a VM interface (NetBox 4.x style)."""
     try:
-        # Search for existing MAC
-        results = nb_api('GET', 'dcim/mac-addresses', params={
+        all_macs = nb_api('GET', 'dcim/mac-addresses', params={
             'assigned_object_type': 'virtualization.vminterface',
-            'assigned_object_id': interface['id']})
-        existing = results.get('results', []) if results else []
+            'assigned_object_id': interface['id']
+        })
+        existing = all_macs.get('results', []) if all_macs else []
 
         if existing:
             mac_obj = existing[0]
@@ -376,7 +347,6 @@ def sync_mac_address(mac, interface):
             })
             print(f"      \u2713 Created MAC: {mac}")
 
-        # Set as primary MAC on the interface
         nb_api('PATCH', f'virtualization/interfaces/{interface["id"]}', data={'primary_mac_address': mac_obj['id']})
 
     except Exception as e:
@@ -400,20 +370,13 @@ def run_command_qemu_agent(node_name, vm_id, command_args):
         return None
 
 
-
 def parse_open_ports(ss_output):
-    """Parse `ss -tlnp` output into {service_name: [port, ...]} dict.
-
-    Handles two formats:
-      Old (with Netid):  tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(...)
-      New (TCP-only -t): LISTEN 0 4096 *:80 *:* users:(...)
-    """
+    """Parse ss -tlnp output into {service_name: [port, ...]} dict."""
     ports_by_name = {}
     for line in ss_output.strip().splitlines():
         parts = line.split()
         if not parts:
             continue
-        # Detect format: old has 'tcp' as first token, new starts with 'LISTEN'
         if parts[0] == 'tcp' and len(parts) >= 6 and parts[1] == 'LISTEN':
             local_addr, proc_col_idx = parts[4], 6
         elif parts[0] == 'LISTEN' and len(parts) >= 5:
@@ -434,7 +397,7 @@ def parse_open_ports(ss_output):
 
 
 def get_open_tcp_ports(node_name, vm_id, vm_type):
-    """Return open TCP ports for a running QEMU VM as {name: [ports]} dict. LXC not supported."""
+    """Return open TCP ports for a running QEMU VM as {name: [ports]} dict."""
     if vm_type != 'qemu':
         return {}
     output = run_command_qemu_agent(node_name, vm_id, ['ss', '-tlnp'])
@@ -445,12 +408,13 @@ def get_open_tcp_ports(node_name, vm_id, vm_type):
 
 def sync_services(vm, ports_by_name):
     """Create/update TCP service records in NetBox for a VM."""
-    # Get existing services
-    results = nb_api('GET', 'ipam/services', params={
-        'parent_object_type': 'virtualization.virtualmachine',
-        'parent_object_id': vm['id'],
-        'protocol': 'tcp'})
-    existing_services = {s['name']: s for s in results.get('results', [])} if results else {}
+    # Fetch all services and filter locally
+    all_services = nb_api('GET', 'ipam/services')
+    matching_services = [s for s in all_services.get('results', []) 
+                       if s.get('parent_object_type') == 'virtualization.virtualmachine' 
+                       and s.get('parent_object_id') == vm['id'] 
+                       and s.get('protocol') == 'tcp']
+    existing_services = {s['name']: s for s in matching_services}
 
     for name, ports in ports_by_name.items():
         ports = sorted(set(ports))
@@ -468,16 +432,18 @@ def sync_services(vm, ports_by_name):
                 'protocol': 'tcp',
                 'ports': ports,
                 'parent_object_type': 'virtualization.virtualmachine',
-                'parent_object_id': vm['id']})
+                'parent_object_id': vm['id'],
+            })
             print(f"      \u2713 Created service: {name} -> {ports}")
 
 
 def assign_ip_to_interface(ip_address, interface, vm):
     """Assign an IP address to an interface in NetBox"""
     try:
-        # Check if IP already exists
-        results = nb_api('GET', 'ipam/ip-addresses', params={'address': ip_address})
-        existing_ip = results['results'][0] if results and results.get('count', 0) > 0 else None
+        # Fetch all IPs and filter locally
+        all_ips = nb_api('GET', 'ipam/ip-addresses')
+        matching_ips = [ip for ip in all_ips.get('results', []) if ip.get('address') == ip_address]
+        existing_ip = matching_ips[0] if matching_ips else None
         
         ip_data = {
             'address': ip_address,
@@ -487,14 +453,11 @@ def assign_ip_to_interface(ip_address, interface, vm):
         }
         
         if existing_ip:
-            # Update existing IP
             nb_api('PATCH', f'ipam/ip-addresses/{existing_ip["id"]}', data=ip_data)
             print(f"        \u2713 Updated IP: {ip_address}")
         else:
-            # Create new IP
             nb_api('POST', 'ipam/ip-addresses', data=ip_data)
             print(f"        \u2713 Created IP: {ip_address}")
-    
     except Exception as e:
         print(f"        \u2717 Error assigning IP {ip_address}: {e}")
 
