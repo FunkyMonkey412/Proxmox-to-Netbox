@@ -78,7 +78,7 @@ def get_or_create_cluster():
     """Get or create cluster in NetBox"""
     # Try to get existing cluster
     try:
-        cluster = nb.virtualization.clusters.get(name=CLUSTER_NAME)
+        cluster = nb.virtualization.clusters.get(name=CLUSTER_NAME, only=['id', 'name', 'type'])
         if cluster:
             print(f"Found existing cluster: {CLUSTER_NAME}")
             return cluster
@@ -88,7 +88,7 @@ def get_or_create_cluster():
     # Create cluster type if needed
     cluster_type_slug = CLUSTER_TYPE_NAME.lower().replace(" ", "-")
     try:
-        cluster_type = nb.virtualization.cluster_types.get(name=CLUSTER_TYPE_NAME)
+        cluster_type = nb.virtualization.cluster_types.get(name=CLUSTER_TYPE_NAME, only=['id', 'name', 'slug'])
         if not cluster_type:
             print(f"Creating cluster type: {CLUSTER_TYPE_NAME}")
             cluster_type = nb.virtualization.cluster_types.create(
@@ -236,7 +236,7 @@ def process_vm(node_name, vm, cluster, vm_type='qemu'):
         memory = vm_config.get('memory', 0)
     
     # Check if VM already exists in NetBox
-    existing_vm = nb.virtualization.virtual_machines.get(name=vm_name)
+    existing_vm = nb.virtualization.virtual_machines.get(name=vm_name, only=['id', 'name', 'status', 'vcpus', 'memory', 'comments', 'cluster'])
     
     vm_data = {
         'name': vm_name,
@@ -281,7 +281,7 @@ def sync_vm_interfaces(node_name, vm_id, vm_name, vm_type='qemu', vm_status='off
         else:
             vm_config = proxmox.nodes(node_name).lxc(vm_id).config.get()
         
-        vm = nb.virtualization.virtual_machines.get(name=vm_name)
+        vm = nb.virtualization.virtual_machines.get(name=vm_name, only=['id', 'name', 'status'])
         
         if not vm:
             return
@@ -303,7 +303,8 @@ def sync_vm_interfaces(node_name, vm_id, vm_name, vm_type='qemu', vm_status='off
                 # Check if interface exists
                 existing_int = nb.virtualization.interfaces.get(
                     virtual_machine_id=vm.id,
-                    name=interface_name
+                    name=interface_name,
+                    only=['id', 'name', 'virtual_machine', 'type']
                 )
                 
                 int_data = {
@@ -340,7 +341,8 @@ def sync_mac_address(mac, interface):
     try:
         existing = nb.dcim.mac_addresses.filter(
             assigned_object_type='virtualization.vminterface',
-            assigned_object_id=interface.id
+            assigned_object_id=interface.id,
+            only=['id', 'mac_address', 'assigned_object_type', 'assigned_object_id']
         )
         existing = list(existing)
 
@@ -433,7 +435,8 @@ def sync_services(vm, ports_by_name):
         for s in nb.ipam.services.filter(
             parent_object_type='virtualization.virtualmachine',
             parent_object_id=vm.id,
-            protocol='tcp'
+            protocol='tcp',
+            only=['id', 'name', 'ports', 'protocol', 'parent_object_type', 'parent_object_id']
         )
     }
 
@@ -462,7 +465,7 @@ def assign_ip_to_interface(ip_address, interface, vm):
     """Assign an IP address to an interface in NetBox"""
     try:
         # Check if IP already exists
-        existing_ip = nb.ipam.ip_addresses.get(address=ip_address)
+        existing_ip = nb.ipam.ip_addresses.get(address=ip_address, only=['id', 'address', 'assigned_object_type', 'assigned_object_id', 'status'])
         
         if existing_ip:
             # Update existing IP
