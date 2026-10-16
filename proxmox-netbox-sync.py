@@ -413,7 +413,8 @@ def run_command_qemu_agent(node_name, vm_id, command_args):
 
 
 def parse_open_ports(ss_output):
-    """Parse ss -tlnp output into {service_name: [port, ...]} dict."""
+    """Parse ss -tlnp output into {port: [port]} dict.
+    Uses port number as key for stable service names across runs."""
     ports_by_name = {}
     for line in ss_output.strip().splitlines():
         parts = line.split()
@@ -429,11 +430,8 @@ def parse_open_ports(ss_output):
             port = int(local_addr.rsplit(':', 1)[-1])
         except ValueError:
             continue
-        name = 'unknown'
-        if len(parts) > proc_col_idx:
-            m = re.search(r'"([^"]+)"', parts[proc_col_idx])
-            if m:
-                name = m.group(1)
+        # Use port number as name for stability
+        name = f'port-{port}'
         ports_by_name.setdefault(name, []).append(port)
     return ports_by_name
 
