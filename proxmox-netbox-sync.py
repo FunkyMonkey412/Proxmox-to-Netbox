@@ -249,12 +249,19 @@ def process_vm(node_name, vm, cluster, vm_type='qemu'):
     
     try:
         if existing_vm:
-            # Update existing VM
-            existing_vm.update(vm_data)
+            # Update existing VM - use save() instead of update() to avoid full object fetch
+            for key, value in vm_data.items():
+                setattr(existing_vm, key, value)
+            existing_vm.save()
             print(f"    ✓ Updated {type_label}: {vm_name}")
         else:
-            # Create new VM
+            # Create new VM - fetch with limited fields after creation
             existing_vm = nb.virtualization.virtual_machines.create(vm_data)
+            # Re-fetch with limited fields to avoid _config_context_data column
+            existing_vm = nb.virtualization.virtual_machines.get(
+                name=vm_name,
+                only=['id', 'name', 'status', 'vcpus', 'memory', 'comments', 'cluster']
+            )
             print(f"    ✓ Created {type_label}: {vm_name}")
     except Exception as e:
         print(f"    ✗ Error with {type_label} {vm_name}: {e}")
@@ -315,11 +322,20 @@ def sync_vm_interfaces(node_name, vm_id, vm_name, vm_type='qemu', vm_status='off
 
                 try:
                     if existing_int:
-                        existing_int.update(int_data)
+                        # Use save() to avoid full object fetch
+                        for key, value in int_data.items():
+                            setattr(existing_int, key, value)
+                        existing_int.save()
                         print(f"      ✓ Updated interface: {interface_name}")
                         interface = existing_int
                     else:
                         interface = nb.virtualization.interfaces.create(int_data)
+                        # Re-fetch with limited fields
+                        interface = nb.virtualization.interfaces.get(
+                            virtual_machine_id=vm.id,
+                            name=interface_name,
+                            only=['id', 'name', 'virtual_machine', 'type']
+                        )
                         print(f"      ✓ Created interface: {interface_name}")
 
                     if mac:
@@ -349,7 +365,8 @@ def sync_mac_address(mac, interface):
         if existing:
             mac_obj = existing[0]
             if str(mac_obj.mac_address).upper() != mac.upper():
-                mac_obj.update({'mac_address': mac})
+                mac_obj.mac_address = mac
+                mac_obj.save()
                 print(f"      ✓ Updated MAC: {mac}")
             else:
                 print(f"      ✓ MAC unchanged: {mac}")
@@ -358,6 +375,11 @@ def sync_mac_address(mac, interface):
                 mac_address=mac,
                 assigned_object_type='virtualization.vminterface',
                 assigned_object_id=interface.id
+            )
+            # Re-fetch with limited fields
+            mac_obj = nb.dcim.mac_addresses.get(
+                id=mac_obj.id,
+                only=['id', 'mac_address', 'assigned_object_type', 'assigned_object_id']
             )
             print(f"      ✓ Created MAC: {mac}")
 
@@ -445,7 +467,8 @@ def sync_services(vm, ports_by_name):
         if name in existing_services:
             svc = existing_services[name]
             if sorted(svc.ports or []) != ports:
-                svc.update({'ports': ports})
+                svc.ports = ports
+                svc.save()
                 print(f"      ✓ Updated service: {name} -> {ports}")
             else:
                 print(f"      - Service unchanged: {name} {ports}")
@@ -468,9 +491,10 @@ def assign_ip_to_interface(ip_address, interface, vm):
         existing_ip = nb.ipam.ip_addresses.get(address=ip_address, only=['id', 'address', 'assigned_object_type', 'assigned_object_id', 'status'])
         
         if existing_ip:
-            # Update existing IP
+            # Update existing IP - use setattr/save to avoid full fetch
             existing_ip.assigned_object_type = 'virtualization.vminterface'
             existing_ip.assigned_object_id = interface.id
+            existing_ip.status = 'active'
             existing_ip.save()
             print(f"        ✓ Updated IP: {ip_address}")
         else:
