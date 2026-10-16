@@ -427,7 +427,7 @@ def get_open_tcp_ports(node_name, vm_id, vm_type):
 
 
 def sync_services(vm, ports_by_name):
-    """Create/update/remove TCP service records in NetBox for a VM."""
+    """Create/update TCP service records in NetBox for a VM."""
     existing_services = {
         s.name: s
         for s in nb.ipam.services.filter(
@@ -437,9 +437,7 @@ def sync_services(vm, ports_by_name):
         )
     }
 
-    seen = set()
     for name, ports in ports_by_name.items():
-        seen.add(name)
         ports = sorted(set(ports))
         if name in existing_services:
             svc = existing_services[name]
@@ -458,10 +456,6 @@ def sync_services(vm, ports_by_name):
             )
             print(f"      ✓ Created service: {name} -> {ports}")
 
-    for name, svc in existing_services.items():
-        if name not in seen:
-            svc.delete()
-            print(f"      ✓ Removed stale service: {name}")
 
 
 def assign_ip_to_interface(ip_address, interface, vm):

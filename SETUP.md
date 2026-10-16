@@ -47,16 +47,9 @@ passwd netboxsync
 - `-M` — no home directory (this is a service account)
 - `-s /usr/sbin/nologin` — disables interactive shell login for security
 
-Set the same password you will use in your `.env` file as `PROXMOX_PASSWORD`.
+Set the API token details in your `.env` file (see .env.example).
 
-**Step 2 — Grant sudo access for LXC container inspection:**
-
-```bash
-echo 'netboxsync ALL=(root) NOPASSWD: /usr/sbin/pct exec *' > /etc/sudoers.d/netboxsync
-chmod 440 /etc/sudoers.d/netboxsync
-```
-
-> Without this step, LXC port discovery is silently skipped. All other sync features still work.
+**Step 2 — Create an API token for the user:**
 
 **Step 3 — Add the user in the Proxmox web UI:**
 
@@ -79,7 +72,7 @@ Go to **Datacenter → Permissions → Add → User Permission**:
 - User: `netboxsync@pam`
 - Role: `NetBoxSync`
 
-Set `PROXMOX_USER=netboxsync@pam` and `PROXMOX_PASSWORD=<password>` in your `.env`.
+Create an API token for the `netboxsync@pam` user in the Proxmox web UI under **Datacenter → Permissions → API Tokens** and set the token details in your `.env` file.
 
 ### QEMU guest agent (required for VM IP and service discovery)
 
@@ -125,7 +118,7 @@ git clone https://github.com/FunkyMonkey412/Proxmox-to-Netbox.git
 cd Proxmox-to-Netbox
 
 python3 -m venv venv
-venv/bin/pip install proxmoxer pynetbox requests python-dotenv paramiko
+venv/bin/pip install proxmoxer pynetbox requests python-dotenv
 
 cp .env.example .env
 # Edit .env with your values
@@ -143,5 +136,4 @@ Once the script runs successfully, consider scheduling it with a cronjob to keep
 | Network interfaces + MACs | `VM.Audit` |
 | LXC IP addresses | `VM.Audit` (built-in, no agent needed) |
 | QEMU VM IP addresses | `VM.GuestAgent.Unrestricted` + guest agent installed and running |
-| LXC open TCP services | SSH to Proxmox host + sudo for `pct exec` + `ss` in container |
 | QEMU VM open TCP services | `VM.GuestAgent.Unrestricted` + guest agent with exec support |
