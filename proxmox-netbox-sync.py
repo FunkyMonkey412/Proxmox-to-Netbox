@@ -95,7 +95,7 @@ def parse_mac_from_config(config_value, vm_type='qemu'):
 def get_or_create_cluster():
     """Get or create cluster in NetBox"""
     # Try to get existing cluster
-    results = nb_api('GET', 'virtualization/clusters', params={'name': CLUSTER_NAME})
+    results = nb_api('GET', 'virtualization/clusters', params={'name': CLUSTER_NAME, 'only': 'id,name,type'})
     if results and results.get('count', 0) > 0:
         cluster = results['results'][0]
         print(f"Found existing cluster: {CLUSTER_NAME}")
@@ -103,7 +103,7 @@ def get_or_create_cluster():
 
     # Create cluster type if needed
     cluster_type_slug = CLUSTER_TYPE_NAME.lower().replace(" ", "-")
-    results = nb_api('GET', 'virtualization/cluster-types', params={'name': CLUSTER_TYPE_NAME})
+    results = nb_api('GET', 'virtualization/cluster-types', params={'name': CLUSTER_TYPE_NAME, 'only': 'id,name,slug'})
     
     if results and results.get('count', 0) > 0:
         cluster_type = results['results'][0]
@@ -250,7 +250,7 @@ def process_vm(node_name, vm, cluster, vm_type='qemu'):
         memory = vm_config.get('memory', 0)
     
     # Check if VM already exists in NetBox
-    results = nb_api('GET', 'virtualization/virtual-machines', params={'name': vm_name})
+    results = nb_api('GET', 'virtualization/virtual-machines', params={'name': vm_name, 'only': 'id,name,status,vcpus,memory,comments,cluster'})
     existing_vm = results['results'][0] if results and results.get('count', 0) > 0 else None
     
     vm_data = {
@@ -318,7 +318,8 @@ def sync_vm_interfaces(node_name, vm_id, vm_name, vm_type='qemu', vm_status='off
                 # Check if interface exists
                 results = nb_api('GET', 'virtualization/interfaces', params={
                     'virtual_machine_id': vm_obj['id'],
-                    'name': interface_name
+                    'name': interface_name,
+                    'only': 'id,name,virtual_machine,type'
                 })
                 existing_int = results['results'][0] if results and results.get('count', 0) > 0 else None
                 
@@ -358,7 +359,8 @@ def sync_mac_address(mac, interface):
         # Search for existing MAC
         results = nb_api('GET', 'dcim/mac-addresses', params={
             'assigned_object_type': 'virtualization.vminterface',
-            'assigned_object_id': interface['id']
+            'assigned_object_id': interface['id'],
+            'only': 'id,mac_address,assigned_object_type,assigned_object_id'
         })
         existing = results.get('results', []) if results else []
 
@@ -451,7 +453,8 @@ def sync_services(vm, ports_by_name):
     results = nb_api('GET', 'ipam/services', params={
         'parent_object_type': 'virtualization.virtualmachine',
         'parent_object_id': vm['id'],
-        'protocol': 'tcp'
+        'protocol': 'tcp',
+        'only': 'id,name,ports,protocol,parent_object_type,parent_object_id'
     })
     existing_services = {s['name']: s for s in results.get('results', [])} if results else {}
 
@@ -480,7 +483,7 @@ def assign_ip_to_interface(ip_address, interface, vm):
     """Assign an IP address to an interface in NetBox"""
     try:
         # Check if IP already exists
-        results = nb_api('GET', 'ipam/ip-addresses', params={'address': ip_address})
+        results = nb_api('GET', 'ipam/ip-addresses', params={'address': ip_address, 'only': 'id,address,assigned_object_type,assigned_object_id,status'})
         existing_ip = results['results'][0] if results and results.get('count', 0) > 0 else None
         
         ip_data = {
