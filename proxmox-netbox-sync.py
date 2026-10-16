@@ -77,9 +77,13 @@ def nb_api(method, endpoint, data=None, params=None):
     elif method == 'POST':
         response = session.post(url, headers=headers, json=data, verify=False)
     elif method == 'PATCH':
+        # For PATCH, endpoint should be like 'virtualization/virtual-machines' 
+        # and data should contain 'id'
         obj_id = data.get('id') if data and isinstance(data, dict) else None
-        url_with_id = f"{NETBOX_URL}/api/{endpoint}/{obj_id}/" if obj_id else url
-        response = session.patch(url_with_id, headers=headers, json=data, verify=False)
+        if obj_id and '{' not in endpoint and '/' not in endpoint.split('/')[-1]:
+            # endpoint doesn't already have an ID, append it
+            url = f"{NETBOX_URL}/api/{endpoint}/{obj_id}/"
+        response = session.patch(url, headers=headers, json=data, verify=False)
     else:
         raise ValueError(f"Unsupported method: {method}")
     
@@ -262,7 +266,7 @@ def process_vm(node_name, vm, cluster, vm_type='qemu'):
     
     try:
         if existing_vm:
-            nb_api('PATCH', f'virtualization/virtual-machines/{existing_vm["id"]}', data=vm_data)
+            nb_api('PATCH', 'virtualization/virtual-machines', data=dict(vm_data, id=existing_vm['id']))
             existing_vm.update(vm_data)
             print(f"    \u2713 Updated {type_label}: {vm_name}")
         else:
@@ -320,7 +324,7 @@ def sync_vm_interfaces(node_name, vm_id, vm_name, vm_type='qemu', vm_status='off
 
                 try:
                     if existing_int:
-                        nb_api('PATCH', f'virtualization/interfaces/{existing_int["id"]}', data=int_data)
+                        nb_api('PATCH', 'virtualization/interfaces', data=dict(int_data, id=existing_int['id']))
                         interface = dict(existing_int, **int_data)
                         print(f"      \u2713 Updated interface: {interface_name}")
                     else:
@@ -353,7 +357,7 @@ def sync_mac_address(mac, interface):
         if existing:
             mac_obj = existing[0]
             if str(mac_obj['mac_address']).upper() != mac.upper():
-                nb_api('PATCH', f'dcim/mac-addresses/{mac_obj["id"]}', data={'mac_address': mac})
+                nb_api('PATCH', 'dcim/mac-addresses', data=dict(mac_address=mac, id=mac_obj['id']))
                 mac_obj['mac_address'] = mac
                 print(f"      \u2713 Updated MAC: {mac}")
             else:
@@ -366,7 +370,7 @@ def sync_mac_address(mac, interface):
             })
             print(f"      \u2713 Created MAC: {mac}")
 
-        nb_api('PATCH', f'virtualization/interfaces/{interface["id"]}', data={'primary_mac_address': mac_obj['id']})
+        nb_api('PATCH', 'virtualization/interfaces', data=dict(primary_mac_address=mac_obj['id'], id=interface['id']))
 
     except Exception as e:
         print(f"      \u2717 Error syncing MAC {mac}: {e}")
@@ -440,7 +444,7 @@ def sync_services(vm, ports_by_name):
         if name in existing_services:
             svc = existing_services[name]
             if sorted(svc.get('ports', []) or []) != ports:
-                nb_api('PATCH', f'ipam/services/{svc["id"]}', data={'ports': ports})
+                nb_api('PATCH', 'ipam/services', data=dict(ports=ports, id=svc['id']))
                 svc['ports'] = ports
                 print(f"      \u2713 Updated service: {name} -> {ports}")
             else:
@@ -472,7 +476,7 @@ def assign_ip_to_interface(ip_address, interface, vm):
         }
         
         if existing_ip:
-            nb_api('PATCH', f'ipam/ip-addresses/{existing_ip["id"]}', data=ip_data)
+            nb_api('PATCH', 'ipam/ip-addresses', data=dict(ip_data, id=existing_ip['id']))
             print(f"        \u2713 Updated IP: {ip_address}")
         else:
             nb_api('POST', 'ipam/ip-addresses', data=ip_data)
