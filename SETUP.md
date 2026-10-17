@@ -47,17 +47,13 @@ passwd netboxsync
 - `-M` — no home directory (this is a service account)
 - `-s /usr/sbin/nologin` — disables interactive shell login for security
 
-Set the API token details in your `.env` file (see .env.example).
-
-**Step 2 — Create an API token for the user:**
-
-**Step 3 — Add the user in the Proxmox web UI:**
+**Step 2 — Add the user in the Proxmox web UI:**
 
 Go to **Datacenter → Permissions → Users → Add**:
 - Username: `netboxsync`
 - Realm: `Linux PAM standard authentication`
 
-**Step 4 — Create a role:**
+**Step 3 — Create a role:**
 
 Go to **Datacenter → Permissions → Roles → Add**:
 - Name: `NetBoxSync`
@@ -65,16 +61,18 @@ Go to **Datacenter → Permissions → Roles → Add**:
 
 > `VM.GuestAgent.Unrestricted` was introduced in Proxmox VE 9. On older versions, use `VM.Monitor` instead.
 
-**Step 5 — Assign the role:**
+**Step 4 — Assign the role:**
 
 Go to **Datacenter → Permissions → Add → User Permission**:
 - Path: `/`
 - User: `netboxsync@pam`
 - Role: `NetBoxSync`
 
-Create an API token for the `netboxsync@pam` user in the Proxmox web UI under **Datacenter → Permissions → API Tokens** and set the token details in your `.env` file.
+**Step 5 — Create an API token:**
 
-### QEMU guest agent (required for VM IP and service discovery)
+Go to **Datacenter → Permissions → API Tokens → Add** and create an API token for the `netboxsync@pam` user, then set the token details in your `.env` file (see .env.example).
+
+### QEMU guest agent (required for VM IP discovery)
 
 For QEMU VMs, IPs are discovered via the QEMU guest agent. Without it, the VM record is still created in NetBox but IP addresses will be missing.
 
