@@ -1,6 +1,6 @@
 # Proxmox to NetBox Sync
 
-Synchronises all QEMU VMs and LXC containers from a Proxmox cluster into NetBox, including interfaces, MAC addresses, IP addresses, and open TCP services.
+Synchronises all QEMU VMs and LXC containers from a Proxmox cluster into NetBox, including interfaces, MAC addresses, and IP addresses.
 
 ## What it syncs
 
@@ -10,7 +10,7 @@ Synchronises all QEMU VMs and LXC containers from a Proxmox cluster into NetBox,
 | Network interfaces | Proxmox VM config (`net0`, `net1`, …) | `virtualization.interfaces` |
 | MAC addresses | Parsed from Proxmox net config | `dcim.mac_addresses` (NetBox 4.x) |
 | IP addresses | QEMU guest agent / LXC interfaces API | `ipam.ip_addresses` |
-| Open TCP services | `ss -tlnp` via QEMU guest agent | `ipam.services` |
+
 
 ## Setup
 
@@ -24,7 +24,7 @@ pip install proxmoxer pynetbox requests python-dotenv
 ```
 
 - NetBox 4.x (MAC addresses are first-class objects, not interface fields)
-- QEMU VMs need the **guest agent installed and running** for IP and service discovery
+- QEMU VMs need the **guest agent installed and running** for IP discovery
 
 ## Configuration
 
@@ -66,7 +66,7 @@ venv/bin/python3 proxmox-netbox-sync.py
 3. **Interfaces** — syncs `net0`, `net1`, … entries from the Proxmox VM config
 4. **MAC addresses** — creates/updates `dcim.mac_addresses` objects linked to the interface and sets them as the primary MAC (NetBox 4.x model)
 5. **IP addresses** — queries the QEMU guest agent or LXC interfaces API; skips loopback and link-local addresses
-6. **Services** — runs `ss -tlnp` inside each running QEMU VM via the guest agent and creates `ipam.services` records for listening TCP ports; removes stale entries
+
 
 ## MAC address parsing
 

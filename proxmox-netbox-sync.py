@@ -11,7 +11,6 @@ import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 import urllib3
 import re
-import time
 import os
 from dotenv import load_dotenv
 
@@ -297,15 +296,6 @@ def process_vm(node_name, vm, cluster, vm_type='qemu'):
     
     sync_vm_interfaces(node_name, vm_id, vm_name, vm_type, status, existing_vm)
 
-    if status == 'active':
-        print(f"    Discovering open TCP ports on {vm_name}...")
-        ports = get_open_tcp_ports(node_name, vm_id, vm_type)
-        if ports:
-            print(f"      Found services: {{k: v for k, v in ports.items()}}")
-        else:
-            print(f"      No open ports found (agent unavailable or none listening)")
-        sync_services(existing_vm, ports)
-
 
 def sync_vm_interfaces(node_name, vm_id, vm_name, vm_type='qemu', vm_status='offline', vm_obj=None):
     """Sync VM network interfaces and IP addresses"""
@@ -393,88 +383,6 @@ def sync_mac_address(mac, interface):
 
     except Exception as e:
         print(f"      \u2717 Error syncing MAC {mac}: {e}")
-
-
-def run_command_qemu_agent(node_name, vm_id, command_args):
-    """Run a command inside a QEMU VM via guest agent; return stdout or None."""
-    try:
-        result = proxmox.nodes(node_name).qemu(vm_id).agent.exec.post(command=command_args)
-        pid = result.get('pid')
-        if not pid:
-            return None
-        for _ in range(15):
-            time.sleep(1)
-            status = proxmox.nodes(node_name).qemu(vm_id).agent('exec-status').get(pid=pid)
-            if status.get('exited'):
-                return status.get('out-data', '')
-        return None
-    except Exception:
-        return None
-
-
-def parse_open_ports(ss_output):
-    """Parse ss -tlnp output into {port: [port]} dict.
-    Uses port number as key for stable service names across runs."""
-    ports_by_name = {}
-    for line in ss_output.strip().splitlines():
-        parts = line.split()
-        if not parts:
-            continue
-        if parts[0] == 'tcp' and len(parts) >= 6 and parts[1] == 'LISTEN':
-            local_addr, proc_col_idx = parts[4], 6
-        elif parts[0] == 'LISTEN' and len(parts) >= 5:
-            local_addr, proc_col_idx = parts[3], 5
-        else:
-            continue
-        try:
-            port = int(local_addr.rsplit(':', 1)[-1])
-        except ValueError:
-            continue
-        # Use port number as name for stability
-        name = f'port-{port}'
-        ports_by_name.setdefault(name, []).append(port)
-    return ports_by_name
-
-
-def get_open_tcp_ports(node_name, vm_id, vm_type):
-    """Return open TCP ports for a running QEMU VM as {name: [ports]} dict."""
-    if vm_type != 'qemu':
-        return {}
-    output = run_command_qemu_agent(node_name, vm_id, ['ss', '-tlnp'])
-    if not output:
-        return {}
-    return parse_open_ports(output)
-
-
-def sync_services(vm, ports_by_name):
-    """Create/update TCP service records in NetBox for a VM."""
-    # Fetch all services from cache and filter locally
-    all_services = get_nb_cache('all_services', lambda: nb_api('GET', 'ipam/services'))
-    matching_services = [s for s in all_services.get('results', []) 
-                       if s.get('parent_object_type') == 'virtualization.virtualmachine' 
-                       and s.get('parent_object_id') == vm['id'] 
-                       and s.get('protocol') == 'tcp']
-    existing_services = {s['name']: s for s in matching_services}
-
-    for name, ports in ports_by_name.items():
-        ports = sorted(set(ports))
-        if name in existing_services:
-            svc = existing_services[name]
-            if sorted(svc.get('ports', []) or []) != ports:
-                nb_api('PATCH', 'ipam/services', data=dict(ports=ports, id=svc['id']))
-                svc['ports'] = ports
-                print(f"      \u2713 Updated service: {name} -> {ports}")
-            else:
-                print(f"      - Service unchanged: {name} {ports}")
-        else:
-            nb_api('POST', 'ipam/services', data={
-                'name': name,
-                'protocol': 'tcp',
-                'ports': ports,
-                'parent_object_type': 'virtualization.virtualmachine',
-                'parent_object_id': vm['id'],
-            })
-            print(f"      \u2713 Created service: {name} -> {ports}")
 
 
 def assign_ip_to_interface(ip_address, interface, vm):

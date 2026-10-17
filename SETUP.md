@@ -11,7 +11,7 @@ This guide covers everything you need to configure in Proxmox and NetBox before 
 The script needs a NetBox API token with read/write access to:
 - `virtualization` — clusters, VMs, interfaces
 - `dcim` — MAC addresses (NetBox 4.x)
-- `ipam` — IP addresses, services
+- `ipam` — IP addresses
 
 To create one:
 
@@ -31,7 +31,7 @@ This script requires **NetBox 4.x**. MAC addresses in 4.x are standalone objects
 
 ### Create the sync user
 
-The script uses a single dedicated user (`netboxsync@pam`) for both Proxmox API access and SSH-based LXC service discovery.
+The script uses a single dedicated user (`netboxsync@pam`) for Proxmox API access.
 
 **Step 1 — Create the Linux user on the Proxmox host:**
 
@@ -76,7 +76,7 @@ Create an API token for the `netboxsync@pam` user in the Proxmox web UI under **
 
 ### QEMU guest agent (required for VM IP and service discovery)
 
-For QEMU VMs, IPs and open ports are discovered via the QEMU guest agent. Without it, the VM record is still created in NetBox but IP addresses and services will be missing.
+For QEMU VMs, IPs are discovered via the QEMU guest agent. Without it, the VM record is still created in NetBox but IP addresses will be missing.
 
 **Install the guest agent inside each VM:**
 
@@ -99,7 +99,7 @@ systemctl enable --now qemu-guest-agent
 
 A reboot of the VM is required after enabling it in Proxmox if the VM was already running.
 
-> If the guest agent is not running (e.g. VM is off, or agent not installed), IP and service discovery is silently skipped for that VM.
+> If the guest agent is not running (e.g. VM is off, or agent not installed), IP discovery is silently skipped for that VM.
 
 ---
 
@@ -136,4 +136,4 @@ Once the script runs successfully, consider scheduling it with a cronjob to keep
 | Network interfaces + MACs | `VM.Audit` |
 | LXC IP addresses | `VM.Audit` (built-in, no agent needed) |
 | QEMU VM IP addresses | `VM.GuestAgent.Unrestricted` + guest agent installed and running |
-| QEMU VM open TCP services | `VM.GuestAgent.Unrestricted` + guest agent with exec support |
+
